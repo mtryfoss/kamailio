@@ -4,6 +4,7 @@
 #include "ro_db_handler.h"
 #include "ims_charging_stats.h"
 #include "../../core/parser/hf.h"
+#include "../../lib/ims/ims_getters.h"
 
 extern struct cdp_binds cdpb;
 
@@ -30,6 +31,9 @@ void dlg_callback_received(
 			break;
 		case DLGCB_EXPIRED:
 			dlg_terminated(dlg, type, termcode, "dialog timeout", _params);
+			break;
+		case DLGCB_EARLY:
+			dlg_early(dlg, type, _params);
 			break;
 		default:
 			LM_WARN("Received unknown dialog callback [%d]\n", type);
@@ -265,4 +269,69 @@ void dlg_terminated(struct dlg_cell *dlg, int type, unsigned int termcode,
 		//}
 		//}
 	}
+}
+
+void dlg_early(struct dlg_cell *dlg, int type, struct dlg_cb_params *_params)
+{
+	struct ro_session *session = 0;
+	struct ro_session_entry *ro_session_entry;
+	str pani = {0, 0};
+	struct hdr_field *h = 0;
+	struct sip_msg *msg;
+
+	LM_DBG("dlg_reply callback entered\n");
+
+	if(!_params) {
+		return;
+	}
+
+	session = (struct ro_session *)*_params->param;
+	if(!session) {
+		LM_ERR("Ro Session object is NULL...... aborting\n");
+		return;
+	}
+
+	ro_session_entry = &(ro_session_table->entries[session->h_entry]);
+	ro_session_lock(ro_session_table, ro_session_entry);
+
+	if(session->direction == RO_TERM_DIRECTION) {
+		msg = _params->rpl;
+		if(!msg) {
+			LM_WARN("dlg_early has no SIP request associated.\n");
+		} else {
+			pani = cscf_get_access_network_info(msg, &h);
+			if(pani.len > 0) {
+				if(session->pani.len > 0) {
+					if(strncasecmp(session->pani.s, pani.s, pani.len)
+							&& session->pani.len == pani.len) {
+						// no change, just return
+						ro_session_unlock(ro_session_table, ro_session_entry);
+						return;
+					}
+
+					session->pani.s =
+							(char *)shm_realloc(session->pani.s, pani.len);
+				} else {
+					session->pani.s = (char *)shm_malloc(pani.len);
+				}
+				if(!session->pani.s) {
+					LM_ERR("no more shm mem\n");
+					ro_session_unlock(ro_session_table, ro_session_entry);
+					return;
+				}
+				session->pani.len = pani.len;
+				memcpy(session->pani.s, pani.s, pani.len);
+
+				session->flags |= RO_SESSION_FLAG_CHANGED;
+				if(ro_db_mode == DB_MODE_REALTIME) {
+					if(update_ro_dbinfo_unsafe(session) != 0) {
+						LM_ERR("Failed to update ro_session in database... "
+							   "continuing\n");
+					};
+				}
+			}
+		}
+	}
+
+	ro_session_unlock(ro_session_table, ro_session_entry);
 }

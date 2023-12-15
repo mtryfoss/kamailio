@@ -1525,8 +1525,8 @@ int Ro_Send_CCR(struct sip_msg *msg, struct dlg_cell *dlg, int dir,
 
 	//TODO: if the following fail, we should clean up the Ro session.......
 	if(dlgb.register_dlgcb(dlg,
-			   DLGCB_TERMINATED | DLGCB_FAILED | DLGCB_EXPIRED
-					   | DLGCB_CONFIRMED,
+			   DLGCB_TERMINATED | DLGCB_FAILED | DLGCB_EXPIRED | DLGCB_CONFIRMED
+					   | DLGCB_EARLY,
 			   dlg_callback_received, (void *)new_session, NULL)
 			!= 0) {
 		LM_CRIT("cannot register callback for dialog confirmation\n");

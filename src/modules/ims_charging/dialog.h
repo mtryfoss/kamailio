@@ -14,5 +14,5 @@ void dlg_terminated(struct dlg_cell *dlg, int type, unsigned int termcode,
 		char *reason, struct dlg_cb_params *_params);
 void dlg_answered(
 		struct dlg_cell *dlg, int type, struct dlg_cb_params *_params);
-
+void dlg_early(struct dlg_cell *dlg, int type, struct dlg_cb_params *_params);
 #endif
