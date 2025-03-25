@@ -112,7 +112,17 @@ peer *get_first_connected_route(
 	for(i = r; i; i = i->next) {
 		if(peer_count >= LB_MAX_PEERS)
 			break;
+
+		if(cdp_session)
+			AAASessionsUnlock(
+					cdp_session
+							->hash); /*V1.1 - Don't attempt to hold two locks at same time */
 		p = get_peer_by_fqdn(&(i->fqdn));
+		if(cdp_session)
+			AAASessionsLock(
+					cdp_session
+							->hash); /*V1.1 - As we were...no call seems to pass cdp_session unlocked */
+
 		if(!p)
 			LM_DBG("The peer %.*s does not seem to be connected or "
 				   "configured\n",
