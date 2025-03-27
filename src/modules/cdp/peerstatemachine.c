@@ -86,7 +86,6 @@ int sm_process(
 {
 	int result_code;
 	peer_event_t next_event;
-	int msg_received = 0;
 
 	if(!peer_locked)
 		lock_get(p->lock);
@@ -363,9 +362,7 @@ int sm_process(
 					p->state = R_Open;
 					break;
 				case R_Rcv_Message:
-					// delayed processing until out of the critical zone
-					//Rcv_Process(p,msg);
-					msg_received = 1;
+					Rcv_Process(p, msg);
 					p->state = R_Open;
 					break;
 				case R_Rcv_DWR:
@@ -430,9 +427,7 @@ int sm_process(
 					p->state = I_Open;
 					break;
 				case I_Rcv_Message:
-					// delayed processing until out of the critical zone
-					//Rcv_Process(p,msg);
-					msg_received = 1;
+					Rcv_Process(p, msg);
 					p->state = I_Open;
 					break;
 				case I_Rcv_DWR:
@@ -523,9 +518,6 @@ int sm_process(
 	}
 	if(!peer_locked)
 		lock_release(p->lock);
-
-	if(msg_received)
-		Rcv_Process(p, msg);
 
 	return 1;
 error:
@@ -1233,8 +1225,12 @@ void Snd_Message(peer *p, AAAMessage *msg)
 	LM_DBG("Snd_Message called to peer [%.*s] for %s with code %d \n",
 			p->fqdn.len, p->fqdn.s, is_req(msg) ? "request" : "response",
 			msg->commandCode);
-	if(msg->sessionId)
+	if(msg->sessionId) {
+		// Ensure proper locking order
+		lock_release(p->lock);
 		session = cdp_get_session(msg->sessionId->data);
+		lock_get(p->lock);
+	}
 
 	if(session) {
 		LM_DBG("There is a session of type %d\n", session->type);
@@ -1343,8 +1339,13 @@ void Rcv_Process(peer *p, AAAMessage *msg)
 		return;
 	}
 
-	if(msg->sessionId)
+	if(msg->sessionId) {
+		// Ensure proper locking order
+		lock_release(p->lock);
 		session = cdp_get_session(msg->sessionId->data);
+		lock_get(p->lock);
+	}
+
 
 	if(session) {
 		switch(session->type) {
