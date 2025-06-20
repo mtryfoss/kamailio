@@ -258,13 +258,25 @@ peer *get_routing_peer(cdp_session_t *cdp_session, AAAMessage *m)
 		destination_host = avp->data;
 
 	if(destination_host.len) {
+		if(cdp_session)
+			AAASessionsUnlock(
+					cdp_session
+							->hash); /*V1.1 - Don't attempt to hold two locks at same time */
 		/* There is a destination host present in the message try and route directly there */
 		p = get_peer_by_fqdn(&destination_host);
 		if(p && (p->state == I_Open || p->state == R_Open)
 				&& peer_handles_application(p, app_id, vendor_id)) {
+			if(cdp_session)
+				AAASessionsLock(
+						cdp_session
+								->hash); /*V1.1 - As we were...no call seems to pass cdp_session unlocked */
 			p->last_selected = time(NULL);
 			return p;
 		}
+		if(cdp_session)
+			AAASessionsLock(
+					cdp_session
+							->hash); /*V1.1 - As we were...no call seems to pass cdp_session unlocked */
 		/* the destination host peer is not connected at the moment, try a normal route then */
 	}
 
