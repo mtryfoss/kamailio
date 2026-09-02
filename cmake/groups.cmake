@@ -357,7 +357,7 @@ set(MOD_LIST_KAFKA kafka)
 set(MOD_LIST_MQTT mqtt)
 
 # * modules depending on nats and ev library
-set(MOD_LIST_NATS nats)
+set(MOD_LIST_NATS nats db_nats)
 
 # * modules depending on ruxc library
 set(MOD_LIST_RUXC ruxc)

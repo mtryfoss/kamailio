@@ -219,7 +219,7 @@ mod_list_kafka=kafka
 mod_list_mqtt=mqtt
 
 # - modules depending on nats and ev library
-mod_list_nats=nats
+mod_list_nats=nats db_nats
 
 # - modules depending on ruxc library
 mod_list_ruxc=ruxc

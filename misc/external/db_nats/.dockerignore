@@ -1,0 +1,7 @@
+# keep the build context to sources the image actually needs
+*_test.go
+config.yaml
+db_nats_backend
+Dockerfile
+.dockerignore
+README.md

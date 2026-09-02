@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding='ISO-8859-1'?>
+<!DOCTYPE section PUBLIC "-//OASIS//DTD DocBook XML V4.4//EN"
+"http://www.oasis-open.org/docbook/xml/4.4/docbookx.dtd" [
+
+<!-- Include general documentation entities -->
+<!ENTITY % docentities SYSTEM "../../../../doc/docbook/entities.xml">
+%docentities;
+
+]>
+
+<section id="db_nats.admin" xmlns:xi="http://www.w3.org/2001/XInclude">
+	<sectioninfo></sectioninfo>
+
+	<title>Admin Guide</title>
+
+	<section id="db_nats.overview">
+	<title>Overview</title>
+	<para>
+		This module provides a DB APIv1 connector that carries database
+		operations over NATS request/reply instead of talking to a database
+		server directly. A backend service subscribed to the configured
+		subjects executes the operations and replies.
+	</para>
+	<para>
+		Because it implements the generic &kamailio; database interface, any
+		module that takes a <emphasis>db_url</emphasis> can use it - usrloc,
+		auth_db, permissions, htable, dialog and so on.
+	</para>
+	<para>
+		A reference backend implementation in Go, which executes the requests
+		against MySQL, is shipped in
+		<emphasis>misc/external/db_nats/</emphasis>.
+	</para>
+	<para>
+		Operations are sent as structured, typed JSON and the backend binds
+		the values as query parameters. Values are therefore never
+		concatenated into SQL. This differs from a driver such as db_mysql,
+		which quotes values locally with
+		<function>mysql_real_escape_string()</function>; db_nats has no local
+		database connection and so cannot escape safely on its own.
+	</para>
+	</section>
+
+	<section id="db_nats.limitations">
+	<title>Limitations</title>
+	<itemizedlist>
+		<listitem><para>
+			<emphasis>No transactions.</emphasis> START TRANSACTION, COMMIT,
+			ROLLBACK, SAVEPOINT, SET AUTOCOMMIT, SET SESSION, LOCK TABLES,
+			GET_LOCK() and SELECT ... FOR UPDATE all require a connection that
+			persists across calls. Over stateless request/reply each statement
+			may reach a different backend and a different database connection.
+			See the <emphasis>session_sql_mode</emphasis> parameter.
+		</para></listitem>
+		<listitem><para>
+			<emphasis>No LAST_INSERT_ID, INSERT DELAYED or async queries.</emphasis>
+			These entry points are not implemented. Every module in the tree
+			null-tests them, so nothing breaks by their absence.
+		</para></listitem>
+		<listitem><para>
+			Every operation blocks the calling process until the reply arrives
+			or <emphasis>request_timeout</emphasis> expires. With usrloc
+			db_mode=3 this puts a round trip on every lookup and save.
+		</para></listitem>
+		<listitem><para>
+			Some modules load an entire table in a single query with no fetch
+			fallback (for example permissions). The NATS
+			<emphasis>max_payload</emphasis> must be large enough for those
+			replies. Modules that honour DB_CAP_FETCH, such as usrloc, page
+			through a server-side cursor instead and are not affected.
+		</para></listitem>
+	</itemizedlist>
+	</section>
+
+	<section id="db_nats.dependencies">
+	<title>Dependencies</title>
+	<para>
+		The NATS C client library
+		(<ulink url="https://github.com/nats-io/nats.c">nats.c</ulink>,
+		version 2.0 or later) must be installed. Unlike the
+		<emphasis>nats</emphasis> module, db_nats does not need libuv: it uses
+		synchronous request/reply rather than an event loop.
+	</para>
+	</section>
+
+	<section id="db_nats.url">
+	<title>Database URL</title>
+	<para>
+		The URL gives the NATS server and the subject namespace:
+	</para>
+	<programlisting format="linespecific">
+nats://[username:password@]host[:port]/[subject_prefix]
+	</programlisting>
+	<para>
+		The path selects the subject prefix; when omitted, the
+		<emphasis>subject_prefix</emphasis> parameter is used. Three subjects
+		are derived from it:
+	</para>
+	<itemizedlist>
+		<listitem><para><emphasis>&lt;prefix&gt;.op</emphasis> - structured operations</para></listitem>
+		<listitem><para><emphasis>&lt;prefix&gt;.raw</emphasis> - raw SQL passthrough</para></listitem>
+		<listitem><para><emphasis>&lt;prefix&gt;.cursor</emphasis> - fetch continuation and cursor close</para></listitem>
+	</itemizedlist>
+	<para>
+		They are separate so that NATS account permissions can deny the raw
+		subject for a given credential, keeping enforcement on the bus.
+	</para>
+	<example>
+		<title>Using db_nats</title>
+		<programlisting format="linespecific">
+modparam("usrloc",  "db_url", "nats://127.0.0.1:4222/kamailio.db")
+modparam("auth_db", "db_url", "nats://127.0.0.1:4222/kamailio.db")
+		</programlisting>
+	</example>
+	</section>
+
+	<section id="db_nats.parameters">
+	<title>Parameters</title>
+
+	<section id="db_nats.p.nats_url">
+		<title><varname>nats_url</varname> (string)</title>
+		<para>
+			A NATS server to connect to. May be set several times to give a
+			cluster, up to 10 entries, in the same style as the
+			<emphasis>nats</emphasis> module.
+		</para>
+		<para>
+			The srdb1 database URL cannot express a server list: a comma in
+			<emphasis>db_url</emphasis> is not parsed as a separator but
+			scattered across the host, password and database fields, which
+			would silently connect to the wrong place. db_nats therefore
+			refuses any <emphasis>db_url</emphasis> containing a comma and
+			expects the cluster here instead.
+		</para>
+		<para>
+			When at least one <emphasis>nats_url</emphasis> is set, the host
+			in <emphasis>db_url</emphasis> is ignored entirely and only its
+			path is used, to select the subject prefix. Give it a placeholder
+			host in that case.
+		</para>
+		<para>
+			Credentials may be embedded per server. They are masked in log
+			output.
+		</para>
+		<example>
+			<title>A cluster with credentials</title>
+			<programlisting format="linespecific">
+modparam("db_nats", "nats_url", "nats://user:pass@10.0.0.1:4222")
+modparam("db_nats", "nats_url", "nats://user:pass@10.0.0.2:4222")
+modparam("db_nats", "nats_url", "nats://user:pass@10.0.0.3:4222")
+
+# host is a placeholder here; only the path is used
+modparam("usrloc", "db_url", "nats://cluster/kamailio.db")
+			</programlisting>
+		</example>
+	</section>
+
+	<section id="db_nats.p.request_timeout">
+		<title><varname>request_timeout</varname> (int)</title>
+		<para>
+			How long to wait for a reply, in milliseconds. The calling process
+			is blocked for this period, so on a SIP worker it is a stall
+			budget: keep it well below your transaction timers.
+		</para>
+		<para><emphasis>Default value is 1000 (1 second).</emphasis></para>
+		<example>
+			<title>Set <varname>request_timeout</varname></title>
+			<programlisting format="linespecific">
+modparam("db_nats", "request_timeout", 500)
+			</programlisting>
+		</example>
+	</section>
+
+	<section id="db_nats.p.connect_timeout">
+		<title><varname>connect_timeout</varname> (int)</title>
+		<para>Connection establishment timeout, in milliseconds.</para>
+		<para><emphasis>Default value is 2000.</emphasis></para>
+	</section>
+
+	<section id="db_nats.p.error_penalty">
+		<title><varname>error_penalty</varname> (int)</title>
+		<para>
+			After a transport error, fail subsequent requests immediately for
+			this many milliseconds instead of attempting them. Set to 0 to
+			disable.
+		</para>
+		<para>
+			Without it, every query during an outage waits out
+			<emphasis>request_timeout</emphasis>, and each one blocks the
+			calling process for that long. With it, one request per window
+			probes the connection and the rest fail at once.
+		</para>
+		<para>
+			Note this state is <emphasis>per process</emphasis>: the
+			connection lives in private memory and is keyed by pid, so each
+			worker keeps its own window. The cost of an outage is therefore
+			roughly one timeout per window per process, not one globally.
+		</para>
+		<para><emphasis>Default value is 1000.</emphasis></para>
+		<example>
+			<title>Set <varname>error_penalty</varname></title>
+			<programlisting format="linespecific">
+modparam("db_nats", "error_penalty", 2000)
+			</programlisting>
+		</example>
+	</section>
+
+	<section id="db_nats.p.error_threshold">
+		<title><varname>error_threshold</varname> (int)</title>
+		<para>
+			How many consecutive transport errors a process must see before it
+			opens an <emphasis>error_penalty</emphasis> window. Raise it to
+			tolerate isolated blips at the cost of more requests waiting out
+			the full timeout.
+		</para>
+		<para><emphasis>Default value is 1.</emphasis></para>
+	</section>
+
+	<section id="db_nats.p.session_sql_mode">
+		<title><varname>session_sql_mode</varname> (string)</title>
+		<para>
+			What to do when a raw query carries session state (COMMIT,
+			SET AUTOCOMMIT, LOCK TABLES and similar). Either
+			<emphasis>reject</emphasis> or <emphasis>ignore</emphasis>.
+		</para>
+		<itemizedlist>
+			<listitem><para>
+				<emphasis>reject</emphasis> - the call fails with an error.
+			</para></listitem>
+			<listitem><para>
+				<emphasis>ignore</emphasis> - the call succeeds as a no-op and
+				a warning is logged. Use this only when the caller can
+				tolerate losing atomicity and isolation.
+			</para></listitem>
+		</itemizedlist>
+		<para>
+			In both cases the statement is <emphasis>never</emphasis> sent.
+			There is deliberately no forwarding mode: a forwarded
+			SET AUTOCOMMIT=0 would leave a pooled backend connection with
+			autocommit disabled for every later unrelated query, while the
+			matching COMMIT reached a different connection.
+		</para>
+		<para><emphasis>Default value is "reject".</emphasis></para>
+		<example>
+			<title>Set <varname>session_sql_mode</varname></title>
+			<programlisting format="linespecific">
+modparam("db_nats", "session_sql_mode", "ignore")
+			</programlisting>
+		</example>
+	</section>
+
+	<section id="db_nats.p.subject_prefix">
+		<title><varname>subject_prefix</varname> (string)</title>
+		<para>
+			Subject prefix used when the database URL has no path.
+		</para>
+		<para><emphasis>Default value is "kamailio.db".</emphasis></para>
+	</section>
+
+	<section id="db_nats.p.max_reconnect">
+		<title><varname>max_reconnect</varname> (int)</title>
+		<para>Maximum reconnect attempts made by the NATS client.</para>
+		<para><emphasis>Default value is 10000.</emphasis></para>
+	</section>
+
+	<section id="db_nats.p.reconnect_wait">
+		<title><varname>reconnect_wait</varname> (int)</title>
+		<para>Delay between reconnect attempts, in milliseconds.</para>
+		<para><emphasis>Default value is 2000.</emphasis></para>
+	</section>
+	</section>
+
+	<section id="db_nats.sizing">
+	<title>Result size and private memory</title>
+	<para>
+		Replies are parsed into private (pkg) memory, and a JSON document
+		costs considerably more than its wire size once parsed into nodes and
+		copied into result values. Budget roughly <emphasis>40 to 50 times the
+		reply size</emphasis> in pkg memory.
+	</para>
+	<para>
+		This matters for modules that page through large tables. With usrloc's
+		default <emphasis>fetch_rows</emphasis> of 2000, a page of the
+		location table is around 450 kB on the wire and needs about 24 MB of
+		pkg to decode - more than the 8 MB default. The symptom is a
+		<emphasis>failed to parse reply json</emphasis> error during preload.
+	</para>
+	<para>
+		Either lower <emphasis>fetch_rows</emphasis> (500 works comfortably
+		within the default pkg for the location table) or raise pkg memory
+		with the <emphasis>-M</emphasis> command line option.
+	</para>
+	<para>
+		Separately, a reply must fit the NATS server's
+		<emphasis>max_payload</emphasis>, 1 MB by default. Modules that page
+		through a cursor are naturally bounded by their fetch size. Modules
+		that load a whole table in one query and have no fetch fallback, such
+		as permissions, are not: for those the backend answers with a
+		<emphasis>reply_too_large</emphasis> error rather than leaving the
+		request to time out, and max_payload must be raised or the query
+		narrowed.
+	</para>
+	</section>
+
+	<section id="db_nats.scaling">
+	<title>Running more than one backend</title>
+	<para>
+		Backends subscribe as a queue group, so ordinary operations are spread
+		across every instance. Cursors are the exception: an open cursor holds
+		a live result set inside one backend process and cannot be served by
+		another. The reply that opens a cursor therefore carries a
+		<emphasis>cursor_subject</emphasis> naming its owner, and db_nats
+		addresses all continuation there rather than to the shared subject.
+	</para>
+	<para>
+		A backend that does not send <emphasis>cursor_subject</emphasis> still
+		works, but only when a single instance is running: with more than one,
+		fetches are load balanced away from the cursor's owner and fail with a
+		message saying the cursor is no longer available.
+	</para>
+	<para>
+		If the owning instance stops, an open cursor is lost. The fetch fails
+		promptly rather than hanging, and the operation in progress - a usrloc
+		preload, for example - is reported as failed. db_nats deliberately
+		does not reopen the query behind the caller's back, since restarting a
+		partly consumed result would silently skip or duplicate rows.
+	</para>
+	<para>
+		A backend being restarted deliberately does not have this effect: on
+		SIGTERM it stops accepting new work but keeps serving already-open
+		cursors until they finish or its grace period expires, so a preload in
+		progress completes rather than failing.
+	</para>
+	<para>
+		<emphasis>One queue group must serve exactly one logical database.</emphasis>
+		Operations are load balanced, so backends in the same group pointing at
+		different databases would answer the same query from different data,
+		non-deterministically. Give each database its own subject prefix,
+		selected per module through the path of
+		<emphasis>db_url</emphasis>. Read replicas of one database are equally
+		unsuitable, because a cursor is bound to a single connection's
+		snapshot.
+	</para>
+	</section>
+
+	<section id="db_nats.compat">
+	<title>Module compatibility</title>
+	<para>
+		Two modules drive SQL transactions through raw queries and cannot work
+		correctly without connection affinity:
+		<emphasis>ims_usrloc_scscf</emphasis> and
+		<emphasis>p_usrloc</emphasis>. Note that p_usrloc's failover path is
+		not gated by its <emphasis>db_use_transactions</emphasis> parameter,
+		so disabling that is not sufficient.
+	</para>
+	<para>
+		At startup db_nats inspects those modules' configured database URLs.
+		If one of them actually points at db_nats, startup fails with an
+		explanatory error when <emphasis>session_sql_mode</emphasis> is
+		<emphasis>reject</emphasis>, or logs a warning when it is
+		<emphasis>ignore</emphasis>. A module pointed at a different driver is
+		left alone.
+	</para>
+	<para>
+		<emphasis>sqlops</emphasis> requires DB_CAP_RAW_QUERY at startup, so
+		the raw subject must be reachable and the backend must permit raw
+		statements for it to work.
+	</para>
+	</section>
+
+	<section id="db_nats.backend">
+	<title>Backend contract</title>
+	<para>
+		Two encoding rules matter when writing your own backend:
+	</para>
+	<itemizedlist>
+		<listitem><para>
+			Every value travels as a JSON string, never a JSON number. The
+			module parses replies with srjson, which stores all numbers as
+			double, so a 64-bit integer sent as a number would be silently
+			corrupted above 2^53.
+		</para></listitem>
+		<listitem><para>
+			Values of type <emphasis>datetime</emphasis> are unix epoch
+			seconds in both directions.
+		</para></listitem>
+	</itemizedlist>
+	<para>
+		Column types must be reported accurately. In particular text columns
+		must be declared <emphasis>string</emphasis> and not
+		<emphasis>str</emphasis>, because only the former is
+		NUL-terminated when copied, and modules such as usrloc and auth_db
+		read values with VAL_STRING() and strlen(). A SQL NULL is sent as a
+		JSON null in the row array.
+	</para>
+	<para>
+		The backend must also serve the <emphasis>version</emphasis> table
+		with an integer version column, since most modules call
+		db_check_table_version() at startup.
+	</para>
+	</section>
+
+</section>
